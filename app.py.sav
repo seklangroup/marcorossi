@@ -1,0 +1,71 @@
+import os
+import requests
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from database import SessionLocal, Property, Lead
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+class ChatMessage(BaseModel):
+    text: str
+    phone: str
+MARCO_PERSONA = (
+    "You are Marco Rossi, a high-end real estate consultant. Your goal is to qualify high-net-worth leads.\n"
+    "Tone: Professional, sophisticated. Language: Portuguese (PT-BR).\n"
+    "Workflow: 1. Discovery, 2. Exclusivity, 3. Qualification (Budget, Timeline), 4. Closing CTA.\n"
+    "Catalog: Penthouse Vista Mar (€748k), Loft Industrial (€141k), Casa Jardim (€365k), Studio Luxury (€70k), Mansão Barra (€1.995M), Apartamento Garden (€183k), Reserva do Vale (€1.29M - OFF MARKET)."
+)
+@app.get("/")
+async def read_index():
+    return FileResponse('index.html')
+@app.post("/chat")
+async def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
+    phone = msg.phone
+    text = msg.text
+    lead = db.query(Lead).filter(Lead.phone == phone).first()
+    if not lead:
+        lead = Lead(phone=phone)
+        db.add(lead)
+        db.commit()
+    status = "QUALIFIED" if lead.is_qualified else "NOT QUALIFIED"
+    
+    # Tenta primeiro o Gemini Pro (o mais estável)
+    models_to_try = ["gemini-pro", "gemini-1.5-flash"]
+    
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        payload = {"contents": [{"parts": [{"text": f"SYSTEM: {MARCO_PERSONA}\nSTATUS: {status}\nUSER: {text}"}]}]}
+        
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                ai_text = data['candidates'][0]['content']['parts'][0]['text']
+                
+                if not lead.is_qualified and any(k in text.lower() for k in ["euro", "€", "valor", "budget"]):
+                    lead.is_qualified = True
+                    db.commit()
+                return {"response": ai_text}
+        except Exception:
+            continue
+    return {"response": "O Marco Rossi está momentaneamente em reunião. Por favor, tente novamente em instantes."}
+@app.get("/properties")
+async def get_properties(db: Session = Depends(get_db)):
+    return db.query(Property).filter(Property.is_off_market == False).all()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Marco Rossi Real Estate</title>
+    <style>
+        :root {
+            --primary: #d4af37;
+            --bg: #1a1a1a;
+            --card: #2a2a2a;
+            --text: #ffffff;
+            --muted: #a0a0a0;
+            --border: #444;
+        }
+        body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: var(--primary); text-align: center; margin-bottom: 30px; }
+        
+        .auth-box { background: var(--card); padding: 20px; border-radius: 12px; border: 1px solid var(--border); text-align: center; margin-bottom: 30px; }
+        .form-group { margin-bottom: 15px; text-align: left; }
+        label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 5px; }
+        input, textarea { width: 100%; padding: 10px; background: #333; border: 1px solid var(--border); color: white; border-radius: 6px; box-sizing: border-box; }
+        
+        button { background: var(--primary); color: black; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.3s; }
+        button:hover { opacity: 0.8; }
+
+        .property-list { margin-top: 40px; background: var(--card); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px; }
+        th { background: #333; color: var(--primary); }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💎 Painel de Gestão Marco Rossi</h1>
+        
+        <div id="auth-section" class="auth-box">
+            <div class="form-group">
+                <label>Token de Administrador</label>
+                <input type="password" id="admin-token" placeholder="Digite a senha...">
+            </div>
+            <button onclick="login()">Aceder ao Painel</button>
+        </div>
+
+        <div id="admin-content" class="hidden">
+            <div class="auth-box">
+                <h3 style="text-align:center; color:var(--primary)">➕ Adicionar Novo Imóvel</h3>
+                <div class="form-group">
+                    <label>Título</label>
+                    <input type="text" id="title" placeholder="Ex: Penthouse Vista Mar">
+                </div>
+                <div class="form-group">
+                    <label>Preço</label>
+                    <input type="text" id="price" placeholder="Ex: €2.000.000">
+                </div>
+                <div class="form-group">
+                    <label>Meta (Resumo)</label>
+                    <input type="text" id="meta" placeholder="Ex: 3 Quartos • 200m² • Leblon">
+                </div>
+                <div class="form-group">
+                    <label>Descrição Completa</label>
+                    <textarea id="description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>URL da Imagem (Link Externo)</label>
+                    <input type="text" id="image_url" placeholder="https://...">
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="off_market"> Imóvel Off-Market (Oculto no site)</label>
+                </div>
+                <button onclick="addProperty()">Cadastrar Imóvel</button>
+            </div>
+
+            <div class="property-list">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Imóvel</th>
+                            <th>Preço</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="prop-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = "";
+        const API_URL = window.location.origin;
+
+        async function login() {
+            const t = document.getElementById('admin-token').value;
+            if(!t) return alert("Digite o token");
+            token = t;
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('admin-content').classList.remove('hidden');
+            loadProperties();
+        }
+
+        async function addProperty() {
+            const data = {
+                title: document.getElementById('title').value,
+                price: document.getElementById('price').value,
+                meta: document.getElementById('meta').value,
+                description: document.getElementById('description').value,
+                image_url: document.getElementById('image_url').value,
+                is_off_market: document.getElementById('off_market').checked
+            };
+
+            const res = await fetch(`${API_URL}/properties?token=${token}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+
+            if(res.ok) {
+                alert("Imóvel adicionado!");
+                loadProperties();
+            } else {
+                alert("Erro ao adicionar. Verifique o token.");
+            }
+        }
+
+        async function loadProperties() {
+            try {
+                const res = await fetch(`${API_URL}/properties`);
+                const props = await res.json();
+                const body = document.getElementById('prop-table-body');
+                body.innerHTML = "";
+                props.forEach(p => {
+                    body.innerHTML += `<tr>
+                        <td>${p.title}</td>
+                        <td>${p.price}</td>
+                        <td>${p.is_off_market ? 'Off-Market' : 'Ativo'}</td>
+                    </tr>`;
+                });
+            } catch (e) {
+                console.error("Erro ao carregar imóveis", e);
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,17 +1,15 @@
 
 import os
+import requests
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-import google.generativeai as genai
 from database import SessionLocal, Property, Lead
 
-# Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key-here")
-genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
@@ -73,27 +71,36 @@ async def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 
     qualification_status = "QUALIFIED" if lead.is_qualified else "NOT QUALIFIED"
     
+    # API V1 STABLE - This is the laaaast resort to avoid v1beta errors
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": f"SYSTEM INSTRUCTION: {MARCO_PERSONA}\n\nLEAD STATUS: {qualification_status}\nUSER: {text}"
+            }]
+        }]
+    }
+    
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=MARCO_PERSONA
-        )
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            return {"response": f"Erro da API ({response.status_code}): {response.text}"}
+            
+        data = response.json()
+        ai_text = data['candidates'][0]['content']['parts'][0]['text']
         
-        chat_context = f"(Current Lead Status: {qualification_status}) {text}"
-        response = model.generate_content(chat_context)
-        ai_text = response.text
-
         keywords = ["euro", "€", "valor", "budget", "milhões", "mil"]
         if not lead.is_qualified and any(k in text.lower() for k in keywords):
             lead.is_qualified = True
             db.commit()
-
+            
         return {"response": ai_text}
     except Exception as e:
-        return {"response": f"Erro técnico com Gemini: {str(e)}"}
+        return {"response": f"Erro técnico: {str(e)}"}
 
 @app.get("/properties")
-async def get_properties(db: Session = Depends(get_db)):
+async def get_//get_properties(db: Session = Depends(get_db)):
     return db.query(Property).filter(Property.is_off_market == False).all()
 
 if __name__ == "__main__":

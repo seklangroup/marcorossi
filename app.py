@@ -1,15 +1,13 @@
-
 import os
 import requests
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import SessionLocal, Property, Lead
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key-here")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 app = FastAPI()
 
@@ -32,27 +30,10 @@ class ChatMessage(BaseModel):
     phone: str
 
 MARCO_PERSONA = (
-    "You are Marco Rossi, a high-end real estate consultant. Your goal is to qualify high-net-worth leads and schedule visits.\n\n"
-    "CORE PERSONA:\n"
-    "- Tone: Professional, sophisticated, empathetic, and authoritative.\n"
-    "- Approach: Consultative selling. Ask more than you tell.\n"
-    "- Language: Portuguese (PT-BR).\n\n"
-    "OPERATIONAL WORKFLOW:\n"
-    "1. Discovery: Identify the core need (Investment vs. Living).\n"
-    "2. Exclusivity: Position properties as 'selected units' or 'off-market'.\n"
-    "3. Qualification: Before revealing specific off-market addresses or deep financial details, you MUST validate:\n"
-    "   - Budget range.\n"
-    "   - Timeline for moving/investing.\n"
-    "   - Motivation.\n"
-    "4. Closing: Every interaction must end with a clear Call to Action (CTA).\n\n"
-    "PROPERTY CATALOG:\n"
-    "- Penthouse Vista Mar: €748.000 | 3 BR | 220m² | Leblon.\n"
-    "- Loft Industrial Moderno: €141.000 | 1 BR | 65m² | Pinheiros.\n"
-    "- Casa Jardim Privativa: €365.000 | 4 BR | 400m² | Jardins.\n"
-    "- Studio Compacto Luxury: €70.000 | 1 BR | 35m² | Itaim Bibi.\n"
-    "- Mansão Contemporânea: €1.995.000 | 6 BR | 800m² | Barra.\n"
-    "- Apartamento Garden: €183.000 | 2 BR | 110m² | Moema.\n"
-    "- Reserva do Vale (OFF-MARKET): €1.290.000 | 12 Hectares | Amarante. (Only reveal details if the user is QUALIFIED)."
+    "You are Marco Rossi, a high-end real estate consultant. Qualify high-net-worth leads.\n"
+    "Tone: Professional, sophisticated. Language: Portuguese (PT-BR).\n"
+    "Workflow: 1. Discovery, 2. Exclusivity, 3. Qualification (Budget, Timeline), 4. Closing CTA.\n"
+    "Catalog: Penthouse Vista Mar (€748k), Loft Industrial (€141k), Casa Jardim (€365k), Studio Luxury (€70k), Mansão Barra (€1.995M), Apartamento Garden (€183k), Reserva do Vale (€1.29M - OFF MARKET)."
 )
 
 @app.get("/")
@@ -61,49 +42,50 @@ async def read_index():
 
 @app.post("/chat")
 async def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
-    phone = msg.phone
-    text = msg.text
-    lead = db.query(Lead).filter(Lead.phone == phone).first()
-    if not lead:
-        lead = Lead(phone=phone)
-        db.add(lead)
-        db.commit()
-
-    qualification_status = "QUALIFIED" if lead.is_qualified else "NOT QUALIFIED"
+    if not GEMINI_API_KEY:
+        return {"response": "Erro: GEMINI_API_KEY não configurada no Railway."}
     
-    # API V1 STABLE - This is the laaaast resort to avoid v1beta errors
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # Model fallback list: (API version, model name)
+    attempts = [
+        ("v1", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1", "gemini-pro"),
+        ("v1beta", "gemini-pro"),
+    ]
     
-    payload = {
-        "contents": [{
-            "parts": [{
-                "text": f"SYSTEM INSTRUCTION: {MARCO_PERSONA}\n\nLEAD STATUS: {qualification_status}\nUSER: {text}"
-            }]
-        }]
-    }
-    
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code != 200:
-            return {"response": f"Erro da API ({response.status_code}): {response.text}"}
-            
-        data = response.json()
-        ai_text = data['candidates'][0]['content']['parts'][0]['text']
+    for version, model in attempts:
+        url = f"https://generativelanguage.googleapis.com/v1{version if version != 'v1' else ''}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        # Correction: the v1 URL is actually https://generativelanguage.googleapis.com/v1/models/...
+        # If version is 'v1', it should be /v1/. If 'v1beta', it should be /v1beta/.
         
-        keywords = ["euro", "€", "valor", "budget", "milhões", "mil"]
-        if not lead.is_qualified and any(k in text.lower() for k in keywords):
-            lead.is_qualified = True
-            db.commit()
-            
-        return {"response": ai_text}
+        # Re-constructing URL correctly
+        fixed_url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {"contents": [{"parts": [{"text": f"SYSTEM: {MARCO_PERSONA}\nUSER: {msg.text}"}]}]}
+        
+        try:
+            response = requests.post(fixed_url, json=payload, timeout=7)
+            if response.status_code == 200:
+                data = response.json()
+                return {"response": data['candidates'][0]['content']['parts'][0]['text']}
+        except Exception:
+            continue
+
+    # If all attempts fail, let's try to list the available models for the user's key
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        list_res = requests.get(list_url, timeout=5)
+        if list_res.status_code == 200:
+            models = [m['name'] for m in list_res.json().get('models', [])]
+            return {"response": f"Erro de Modelo. Sua chave suporta: {', '.join(models[:5])}..."}
+        return {"response": f"Erro na API Google: {list_res.status_code}"}
     except Exception as e:
-        return {"response": f"Erro técnico: {str(e)}"}
+        return {"response": f"Erro fatal: {str(e)}"}
 
 @app.get("/properties")
-async def get_//get_properties(db: Session = Depends(get_db)):
+async def get_properties(db: Session = Depends(get_db)):
     return db.query(Property).filter(Property.is_off_market == False).all()
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
